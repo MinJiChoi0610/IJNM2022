@@ -1,4 +1,0 @@
-numpy==1.16.1
-
-git+https://github.com/dpnm-ni/ni-mano#subdirectory=ni_mon_client_api
-git+https://github.com/dpnm-ni/ni-mano#subdirectory=ni_nfvo_client_api
