@@ -1,0 +1,352 @@
+# <scaleup_down_SFC.py>
+from __future__ import print_function
+import ni_mon_client
+from config import cfg
+import ni_nfvo_client
+import time
+import json
+import datetime as dt
+import os.path
+import predict_resource_RNN
+from dateutil.tz import gettz
+
+class scaleup_down:
+    def __init__(self,prefix, sfc_name, trainfile, scaling_duration, no_of_reading_per_unit_time, waite_time, threshold_traffic, threshold_cpu, max_scaleup):
+        self.prefix=prefix
+        self.sfc_name=sfc_name
+        self.trainfile = trainfile
+        self.scaling_duration = scaling_duration
+        self.no_of_reading_per_unit_time = no_of_reading_per_unit_time
+        self.waite_time = waite_time
+        self.threshold_traffic=threshold_traffic
+        self.threshold_cpu=threshold_cpu
+        self.max_scaleup = max_scaleup
+        self.resource_type = ["cpu_usage___value___gauge",
+                         "memory_free___value___gauge",
+                         "vda___disk_ops___read___derive",
+                         "vda___disk_ops___write___derive",
+                         "if_packets___rx___derive",
+                         "if_packets___tx___derive"]
+        self.vnf_id_name_pair = {
+            "id": [],
+            "name": []
+        }
+        self.log_scaling_file = open("log_scaling.csv", 'w')
+
+    # log_scaling_event(): this function will log the current traffic, predicted traffic and predicted no of SFCs
+    def log_scaling_event(self, traffic, predicted_traffic, scaling_decision):
+        self.log_scaling_file.write(str(traffic) + ","+ str(predicted_traffic[0][0]) + "," + str(scaling_decision) + "\n")
+
+    # update_sfc(sfc_info): Update SFC, main function to do auto-scaling
+    # Input: updated sfc_info, which includes additional instances or removed instances
+    # Output: none
+    def update_sfc(self, sfc_info):
+        sfc_update_spec = ni_nfvo_client.SfcUpdateSpec() # SfcUpdateSpec | Sfc Update info.
+        sfc_update_spec.sfcr_ids = sfc_info.sfcr_ids
+        sfc_update_spec.vnf_instance_ids = sfc_info.vnf_instance_ids
+
+        nfvo_client_cfg = ni_nfvo_client.Configuration()
+        nfvo_client_cfg.host = cfg["ni_nfvo"]["host"]
+        ni_nfvo_sfc_api = ni_nfvo_client.SfcApi(ni_nfvo_client.ApiClient(nfvo_client_cfg))
+
+        ni_nfvo_sfc_api.update_sfc(sfc_info.id, sfc_update_spec)
+
+    # find_type() : this function will find the type of the measurements
+    def find_type(self, measurment_type,type):
+        measurement_type_list=[]
+        for i in range(len(measurment_type)):
+            if measurment_type[i].find(type)!= -1:
+                measurement_type_list.append(measurment_type[i])
+        #print("measurement_type_list:", measurement_type_list)
+        return measurement_type_list
+
+    # get_vnf() : will store the VNF id and name pair filterd with the given prefix
+    def get_vnfs(self):
+        ni_mon_client_cfg = ni_mon_client.Configuration()
+        ni_mon_client_cfg.host = cfg["ni_mon"]["host"]
+        api_instance = ni_mon_client.DefaultApi(ni_mon_client.ApiClient(ni_mon_client_cfg))
+
+        vnf_list = api_instance.get_vnf_instances()
+
+        for i in range(len(vnf_list)):
+            if vnf_list[i].name.startswith(self.prefix):
+                self.vnf_id_name_pair["id"].append(vnf_list[i].id)
+                self.vnf_id_name_pair["name"].append(vnf_list[i].name)
+        print("------------ Available VNFs for this SFC using prefix info----------")
+        print(self.vnf_id_name_pair)
+
+    # find_vnf_id(): this function will find the id of the VNF for given suffics for ex: if vnf name is della_DC_firewall_0_1. Fiven the _0_1, it will return id of this vnf
+    def find_vnf_id(self, suffics):
+        for i in range(len(self.vnf_id_name_pair["name"])):
+            if self.vnf_id_name_pair["name"][i].endswith(suffics):
+                return self.vnf_id_name_pair["id"][i]
+        return 0
+
+    # get_resrouce_utilization() : This function will return the resource CPU, memory, IO, Traffic in, Traffic out for given time duration for given sfc
+    def get_resrouce_utilization(self, sfc_name, start_time, end_time):
+        # Get the SFC info in sfc_info variable
+        nfvo_client_cfg = ni_nfvo_client.Configuration()
+        nfvo_client_cfg.host = cfg["ni_nfvo"]["host"]
+        ni_nfvo_sfc_api = ni_nfvo_client.SfcApi(ni_nfvo_client.ApiClient(nfvo_client_cfg))
+        query = ni_nfvo_sfc_api.get_sfcs()
+        sfc_info = [sfci for sfci in query if sfci.sfc_name == sfc_name]
+        #print("sfc_info:",sfc_info)
+
+        if len(sfc_info) == 0:
+            return False
+
+        sfc_info = sfc_info[-1]
+
+        ni_mon_client_cfg = ni_mon_client.Configuration()
+        ni_mon_client_cfg.host = cfg["ni_mon"]["host"]
+        api_instance = ni_mon_client.DefaultApi(ni_mon_client.ApiClient(ni_mon_client_cfg))
+
+        no_of_tier= len(sfc_info.vnf_instance_ids)
+
+        no_of_vnf=len(sfc_info.vnf_instance_ids[0])
+
+
+        resource=[]
+        for type in self.resource_type:
+            value = 0
+            #print(no_of_vnf)
+
+            for i in range(no_of_vnf):
+                vnf = sfc_info.vnf_instance_ids[0][i]
+                # This was needed for traffic interface __rx__ and __tx__ as there are two type of traffic "control" and "data"
+                if type == "if_packets___rx___derive" or type == "if_packets___tx___derive" :
+                # if type == "if_packets___rx___derive" :
+                    # var = api_instance.get_measurement_types(vnf)
+                    # print(var)
+                    type_list = self.find_type(api_instance.get_measurement_types(vnf), type)
+                    for j in range(len(type_list)):
+                        type_id = type_list[j]
+                        # measurement_type_list[0]  + if_packets___rx___derive"
+                        #end_time = dt.datetime.now()
+                        #start_time = end_time - dt.timedelta(seconds=self.waite_time)
+                        query = api_instance.get_measurement(vnf, type_id, start_time, end_time)
+                        if query!=[]:
+                            value = value+query[0].measurement_value
+                else: # for CPU, Memory, Disk
+                    query = api_instance.get_measurement(vnf, type, start_time, end_time)
+                    #print("query :", query)
+                    if query!=[]:
+                        value = value + query[0].measurement_value
+            resource.append(value) # [CPU, Memory, Disk, Disk, Tx, Rx]
+        return resource
+
+    # store_measurement_to_train_RNN(self) : This function will measure the traffic and store it in measurment.csv file for traing the RNN model.
+    def store_measurement_to_train_RNN(self):
+        output_measurement = open(self.trainfile, 'w')
+        for d in range(self.scaling_duration):
+            #how many times you want to measure the resource
+            max_resource=[]
+            for l in range(len(self.resource_type)):
+                max_resource.append(0)
+            for t in range(self.no_of_reading_per_unit_time):
+                #end_time = dt.datetime.now()
+                #end_time = dt.datetime.now(gettz('Asia/Seoul'))
+                end_time = dt.datetime.now(gettz('UTC'))
+                start_time = end_time - dt.timedelta(seconds=2)
+                resource=self.get_resrouce_utilization(self.sfc_name, start_time, end_time)
+                print("resource L ",resource)
+                for r in range(len(self.resource_type)):
+                    print(max_resource[r], resource[r])
+                    if max_resource[r] < resource[r]:
+                        max_resource[r] = resource[r]
+                time.sleep(self.waite_time)
+            #store the measurement in the file
+            print("max_resource:", max_resource)
+            max_resource_str=str(max_resource)[1:len(str(max_resource))-1]
+            output_measurement.write(str(d) + "," + max_resource_str)
+            output_measurement.write("\n")
+
+        output_measurement.close()
+
+    # test_RNN_scaling(self) : This is main function with will train the RNN model with the existing traing file measurmenet.csv and then measure traffic untill "duration" and predict the traffic
+    def test_RNN_scaling(self):
+        RNN_model = predict_resource_RNN.RNN_resource_modeling(self.trainfile , self.threshold_traffic,self.threshold_cpu, self.max_scaleup)  # CPU,Memory,I/O, Traffic in, Traffic Out for each VNF
+        start = time.perf_counter()
+        RNN_model.train()
+        end = time.perf_counter()
+        print("time taken to train", start-end)
+        RNN_model.plot_comparison_with_scaling(start_idx = 0, length=1500, train=True)
+
+        #output_measurement = open(filename, 'w')
+        for d in range(self.scaling_duration):
+
+            #We measure the resource usage self.no_of_reading_per_unit_time times and take only the maximum value among several measurement
+            max_resource=[]
+            for l in range(len(self.resource_type)):
+                max_resource.append(0)
+
+            #measurement taken
+            for t in range(self.no_of_reading_per_unit_time):
+                time1=time.perf_counter()
+                #end_time = dt.datetime.now()
+                #end_time = dt.datetime.now(gettz('Asia/Seoul'))
+                end_time = dt.datetime.now(gettz('UTC'))
+                start_time = end_time - dt.timedelta(seconds= self.waite_time)
+                resource = self.get_resrouce_utilization(self.sfc_name,start_time, end_time)
+                for r in range(len(max_resource)):
+                    if max_resource[r] < resource[r]:
+                        max_resource[r] = resource[r]
+                time2=time.perf_counter()
+                sleep_if_needed=self.waite_time - (time2-time1)
+                if sleep_if_needed > 0:
+                    time.sleep(self.waite_time - (time2-time1))
+
+            max_resource.insert(0 , d)
+            x_data=[max_resource]
+
+            # measurement is then sent to the RNN_model for prediction
+            predicted_cpu, predicted_vnfs = RNN_model.test(x_data)
+
+            # based on the predicted traffic scaleup or scale down
+            starttime = time.perf_counter()
+            self.sclaup_down(predicted_vnfs)
+            endtime = time.perf_counter()
+            timetaken =endtime - starttime
+            print("timetakenfordeployment :", endtime - starttime)
+            d = d + int((timetaken % (self.no_of_reading_per_unit_time*self.waite_time)))
+
+            print("log: actual cpu, predicted cpu, scaling_vnfs", x_data[0][1], predicted_cpu, predicted_vnfs)
+            self.log_scaling_event(x_data[0][1], predicted_cpu, predicted_vnfs)
+
+    # test_threshold_scaling() : this function scaleup and down based on threshold values
+    def test_threshold_scaling(self):
+        output_measurement = open(self.trainfile, 'w')
+        RNN_model = predict_resource_RNN.RNN_resource_modeling( "dummy.csv" , self.threshold_traffic,self.threshold_cpu, self.max_scaleup)  # CPU,Memory,I/O, Traffic in, Traffic Out for each VNF
+        #print("sfc_name ;", self.sfc_name)
+
+        for d in range(self.scaling_duration): # scaling_duration = 1483 for wikki.
+            #how many times you want to measure the resource
+            max_resource=[]
+            for l in range(len(self.resource_type)): #[cpu, memory, diskread, diskwrite, rx, tx] = [0,0,0,0,0,0]
+                max_resource.append(0) # initialize
+
+            for t in range(self.no_of_reading_per_unit_time*3 - 6): # from 1 ~ 12 총 1 min(한 단계당 5초 * 12번 = 60초)
+                time1 = time.perf_counter()
+                #end_time = dt.datetime.now()
+                #end_time = dt.datetime.now(gettz('Asia/Seoul'))
+                end_time = dt.datetime.now(gettz('UTC'))
+                start_time = end_time - dt.timedelta(seconds=self.waite_time)
+                resource=self.get_resrouce_utilization(self.sfc_name,start_time, end_time)
+                for r in range(len(self.resource_type)): # smoothing the curve
+                    #print(max_resource[r], resource[r])
+                    if max_resource[r] < resource[r]:
+                        max_resource[r] = resource[r]
+                time2 = time.perf_counter()
+                sleep_if_needed = self.waite_time - (time2 - time1)
+                #print("Sleep_if_needed, max_resource : \n", sleep_if_needed, max_resource)
+                if sleep_if_needed > 0:
+                    time.sleep(self.waite_time - (time2 - time1))
+
+            max_resource.insert(0 , d)
+            x_data=[max_resource]
+
+            server_needed = RNN_model.server_needed(x_data[0][1])
+
+            # based on the predicted traffic scaleup or scale down
+            starttime = time.perf_counter()
+            self.sclaup_down(server_needed)
+            endtime = time.perf_counter()
+            timetaken = endtime - starttime
+            print("timetakenfordeployment :", endtime - starttime)
+            d = d + int((timetaken % (self.no_of_reading_per_unit_time*self.waite_time)))
+
+            print("log: actual cpu, predicted cpu, scaling_vnfs", x_data[0][1], server_needed)
+            self.log_scaling_event(x_data[0][1], " " , server_needed)
+
+            print("max_resrouce:", max_resource)
+            max_resource_str = str(max_resource)[1:len(str(max_resource)) - 1]
+            output_measurement.write(max_resource_str)
+            output_measurement.write("\n")
+
+        output_measurement.close()
+
+    #sclaup_down() : this function will scaeup and scaledown the VNFs
+    def sclaup_down(self, predicted_vnfs):
+        nfvo_client_cfg = ni_nfvo_client.Configuration()
+        nfvo_client_cfg.host = cfg["ni_nfvo"]["host"]
+        ni_nfvo_sfc_api = ni_nfvo_client.SfcApi(ni_nfvo_client.ApiClient(nfvo_client_cfg))
+        query = ni_nfvo_sfc_api.get_sfcs()
+        sfc_info = [sfci for sfci in query if sfci.sfc_name == self.sfc_name]
+
+        if len(sfc_info) == 0:
+            return False
+
+        sfc_info = sfc_info[-1]
+
+        ni_mon_client_cfg = ni_mon_client.Configuration()
+        ni_mon_client_cfg.host = cfg["ni_mon"]["host"]
+        api_instance = ni_mon_client.DefaultApi(ni_mon_client.ApiClient(ni_mon_client_cfg))
+
+        no_of_tier= len(sfc_info.vnf_instance_ids)
+
+        no_of_vnf=len(sfc_info.vnf_instance_ids[0])
+
+        # How much to scale
+        scaling_flag = predicted_vnfs - no_of_vnf
+
+        print("sfc_info.vnf_instance_ids: before Scaling up and down : ", sfc_info.vnf_instance_ids)
+
+        print("Scaling up_down flag :", scaling_flag)
+
+        print("+++++++++++++++++++++++++++++")
+
+        if scaling_flag > 0 :
+            for tier in range(no_of_tier):
+                for scaleing in range(scaling_flag):
+                    suffics = str(tier) + "_" + str(scaleing + no_of_vnf)
+                    id = self.find_vnf_id(suffics)
+                    if id!=0:
+                        sfc_info.vnf_instance_ids[tier].append(id)
+                    else:
+                        # Create VNF instances code later
+                        print( "error no vnf exists for scaling")
+
+            print("scalingup ---- sfc_info.vnf_instance_ids:", sfc_info.vnf_instance_ids)
+
+        if scaling_flag < 0:
+            for tier in range(no_of_tier):
+                for scaleing in range(abs(scaling_flag)):
+                    #delete VNF instance code later
+                    del sfc_info.vnf_instance_ids[tier][-1]
+            print("scalingdown ---- sfc_info.vnf_instance_ids:", sfc_info.vnf_instance_ids)
+
+        self.update_sfc(sfc_info)
+
+
+
+if __name__ == '__main__':
+
+    with open('input.json') as f:
+        sfc = json.load(f)
+        prefix= sfc["prefix"]
+        sfc_name = sfc["prefix"]+"_sfc" #Della-DC_sfc
+        waite_time = sfc["wait_time"]
+        no_of_reading_per_unit_time=int(sfc["-d_arg_wrk"]) / int(waite_time) #60seconds/5 = 12seconds
+        scaling_duration= sfc["scaling_duration"]  # 1500 , actual scaling duration will be 1500 * 10s
+        threshold_request_per_sec=sfc["threshhold_request"] # SLI indicators
+        threshold_cpu_utilization=sfc["threshold_cpu"]  # SLI indicators
+        max_scaleup=sfc["max_scalup"]
+        scaling_algo = sfc["scaling_algo"]
+
+        scaleup_down = scaleup_down(prefix, sfc_name, "measurement.csv", int(scaling_duration), int(no_of_reading_per_unit_time), int(waite_time), int(threshold_request_per_sec), int(threshold_cpu_utilization), int(max_scaleup)  )
+
+        scaleup_down.get_vnfs()
+        # scaleup_down.sclaup_down(1)
+
+        if scaling_algo=="RNN_based":
+            if os.path.isfile('measurement.csv'):
+
+                scaleup_down.test_RNN_scaling()
+
+            else:
+                scaleup_down.store_measurement_to_train_RNN()
+        else:
+            print("i am here")
+            scaleup_down.test_threshold_scaling()
+
+        scaleup_down.log_scaling_file.close()
