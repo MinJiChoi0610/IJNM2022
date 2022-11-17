@@ -1,0 +1,40 @@
+{
+    "core_switch_id_for_edge": "Switch-core-01",
+    "edge_no": "3",
+    "tor_no": "1",
+    "svr_no": "4",
+    "core_switch_id_for_DC": "ni-compute-181-154",
+    "dc_edge_no": "1",
+    "dc_tor_no": "1",
+    "dc_svr_no": "1",
+    "vnf_flav": [
+        "a6bf746a-84f4-4b3a-b7f9-cebdf4730efb",
+        "c27582df-3522-453c-abf0-a5e68122f89b",
+        "4f572d38-ffbe-4d35-826a-df690c209644",
+        "a6bf746a-84f4-4b3a-b7f9-cebdf4730efb",
+        "a6bf746a-84f4-4b3a-b7f9-cebdf4730efb",
+        "b188257c-5c63-41fa-b70c-4400b6058f8e",
+        "bafef580-2323-4f5c-b725-2620672934df",
+        "d9836380-e692-4e2e-8c46-a3ec3476387b"
+    ],
+    "vnf_images": [
+        "ed529e54-70ff-4fb7-8d2f-75e8973192c5",
+        "ed529e54-70ff-4fb7-8d2f-75e8973192c5",
+	"2195cb53-1426-4884-80ca-6fc394d255a9",
+	"ed529e54-70ff-4fb7-8d2f-75e8973192c5",
+	"ed529e54-70ff-4fb7-8d2f-75e8973192c5"
+],
+    "vnf_names": [
+        "addedrules",
+        "firewall",
+        "proxy",
+        "AddedRules",
+        "EndFirewall",
+        "vnf1",
+        "vnf2",
+        "vnf3"
+    ],
+    "load_these_servers": [
+	"ni-compute-181-161"
+    ]
+}
