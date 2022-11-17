@@ -1,0 +1,46 @@
+{
+    "core_switch_id_for_edge": "Switch-core-01",
+    "edge_no": "3",
+    "tor_no": "1",
+    "svr_no": "4",
+    "core_switch_id_for_DC": "ni-compute-181-154",
+    "dc_edge_no": "1",
+    "dc_tor_no": "1",
+    "dc_svr_no": "1",
+    "vnf_flav": [
+        "a6bf746a-84f4-4b3a-b7f9-cebdf4730efb",
+        "f9cf2968-ca96-4d35-8cd6-a7fd80b55352",
+        "bafef580-2323-4f5c-b725-2620672934df",
+        "5015cb92-d504-4621-add0-10307f618186",
+        "b188257c-5c63-41fa-b70c-4400b6058f8e",
+        "4f572d38-ffbe-4d35-826a-df690c209644",
+        "d9836380-e692-4e2e-8c46-a3ec3476387b",
+        "a6bf746a-84f4-4b3a-b7f9-cebdf4730efb"
+    ],
+    "vnf_images": [
+        "ed529e54-70ff-4fb7-8d2f-75e8973192c5",
+        "107c1f9c-cdad-4bd0-8910-1ad61237b4af",
+	    "2195cb53-1426-4884-80ca-6fc394d255a9",
+	    "71f788f0-4807-4d3c-9c05-638086eca96b",
+	    "33bbc3b1-4fa0-4784-b7f4-9c4fefa52207"
+],
+    "vnf_names": [
+        "firewall",
+        "addedrules",
+        "proxy",
+        "flowmonitor",
+        "dpi",
+        "vnf1",
+        "vnf2",
+        "vnf3"
+    ],
+    "load_these_servers": [
+        "ni-compute-181-154",
+        "ni-compute-181-155",
+        "ni-compute-181-156",
+        "ni-compute-181-158",
+        "ni-compute-181-161",
+        "ni-compute-181-162",
+        "ni-compute-kisti"
+    ]
+}
